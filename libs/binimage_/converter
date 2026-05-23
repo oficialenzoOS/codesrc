@@ -1,0 +1,197 @@
+; renomeador.asm
+; NASM x86_64 Linux
+
+BITS 64
+
+SECTION .data
+    dirname db ".",0
+
+    ext32 db ".binimage32",0
+    ext64 db ".binimage64",0
+    zipext db ".zip",0
+
+SECTION .bss
+    fd resq 1
+    buffer resb 8192
+    oldname resb 512
+    newname resb 512
+
+SECTION .text
+    global _start
+
+_start:
+
+    ; open(".")
+    mov rax, 2
+    mov rdi, dirname
+    mov rsi, 0x10000        ; O_DIRECTORY
+    syscall
+
+    mov [fd], rax
+
+read_dir:
+    ; getdents64(fd, buffer, 8192)
+    mov rax, 217
+    mov rdi, [fd]
+    mov rsi, buffer
+    mov rdx, 8192
+    syscall
+
+    test rax, rax
+    jle finish
+
+    mov r12, rax
+    mov r13, buffer
+
+next_entry:
+    cmp r12, 0
+    jle read_dir
+
+    ; d_reclen
+    movzx r14, word [r13 + 16]
+
+    ; nome do arquivo
+    lea r15, [r13 + 19]
+
+    ; verifica .binimage32
+    mov rdi, r15
+    mov rsi, ext32
+    call ends_with
+    cmp rax, 1
+    je rename32
+
+    ; verifica .binimage64
+    mov rdi, r15
+    mov rsi, ext64
+    call ends_with
+    cmp rax, 1
+    je rename64
+
+continue_loop:
+    add r13, r14
+    sub r12, r14
+    jmp next_entry
+
+rename32:
+    mov rdi, r15
+    mov rsi, ext32
+    call make_zip_name
+    jmp do_rename
+
+rename64:
+    mov rdi, r15
+    mov rsi, ext64
+    call make_zip_name
+
+do_rename:
+    ; rename(oldname, newname)
+    mov rax, 82
+    mov rdi, oldname
+    mov rsi, newname
+    syscall
+
+    jmp continue_loop
+
+finish:
+    ; exit(0)
+    mov rax, 60
+    xor rdi, rdi
+    syscall
+
+; ----------------------------------------
+; ends_with(nome, extensao)
+; retorna 1 se terminar com extensão
+; ----------------------------------------
+
+ends_with:
+    push rdi
+    push rsi
+
+    call strlen
+    mov r8, rax
+
+    mov rdi, rsi
+    call strlen
+    mov r9, rax
+
+    pop rsi
+    pop rdi
+
+    cmp r8, r9
+    jl fail
+
+    mov rcx, r9
+    lea rdi, [rdi + r8 - r9]
+
+compare_loop:
+    mov al, [rdi]
+    mov bl, [rsi]
+
+    cmp al, bl
+    jne fail
+
+    inc rdi
+    inc rsi
+    loop compare_loop
+
+    mov rax, 1
+    ret
+
+fail:
+    xor rax, rax
+    ret
+
+; ----------------------------------------
+; strlen
+; ----------------------------------------
+
+strlen:
+    xor rax, rax
+
+strlen_loop:
+    cmp byte [rdi + rax], 0
+    je strlen_done
+    inc rax
+    jmp strlen_loop
+
+strlen_done:
+    ret
+
+; ----------------------------------------
+; make_zip_name
+; cria novo nome .zip
+; ----------------------------------------
+
+make_zip_name:
+    ; copia oldname
+    mov rdx, 0
+
+copy_loop:
+    mov al, [rdi + rdx]
+    mov [oldname + rdx], al
+    mov [newname + rdx], al
+
+    cmp al, 0
+    je copied
+
+    inc rdx
+    jmp copy_loop
+
+copied:
+    ; tamanho do nome
+    mov rcx, rdx
+
+find_dot:
+    dec rcx
+    cmp byte [newname + rcx], '.'
+    je replace_ext
+    jmp find_dot
+
+replace_ext:
+    mov byte [newname + rcx], '.'
+    mov byte [newname + rcx + 1], 'z'
+    mov byte [newname + rcx + 2], 'i'
+    mov byte [newname + rcx + 3], 'p'
+    mov byte [newname + rcx + 4], 0
+
+    ret
